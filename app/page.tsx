@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { DIRECTORIES, DIRECTORY_STATUSES, type DirectoryStatus } from "@/lib/directories";
 
 type Keyword = { id: number; phrase: string };
 type Post = {
@@ -13,44 +14,54 @@ type Post = {
   ai_reply: string | null;
 };
 type Profile = { name: string; url: string; description: string };
-
-const DIRECTORIES = [
-  "Product Hunt",
-  "Indie Hackers",
-  "Microlaunch",
-  "Hacker News (Show HN)",
-  "BetaList",
-  "Reddit r/SideProject",
-  "AlternativeTo",
-  "SaaSHub",
-  "Uneed",
-  "Peerlist Launchpad",
-  "DevHunt",
-  "Fazier",
-  "TinyLaunch",
-  "Launching Next",
-  "Startup Stash",
-  "StartupBase",
-  "Betapage",
-  "G2",
-  "Capterra",
-  "Crunchbase",
-  "There's An AI For That",
-  "Futurepedia",
-  "Toolify",
-  "SideProjectors",
-  "DEV Community",
-  "Lobsters",
-  "OpenHunts",
-  "Smol Launch",
-  "Startups.fyi",
-  "F6S",
-];
-
-const CHECKLIST_KEY = "launchradar:directories";
+type AutoFillInput = { field: string; selector: string; inputId: string | null; value: string };
+type AutoFillPayload = {
+  directory: string;
+  submitUrl: string;
+  requiresLogin: boolean;
+  formSelector: string;
+  inputs: AutoFillInput[];
+  submitButton: string;
+  notes: string | null;
+};
 
 const card =
   "bg-white shadow-[0_4px_20px_-4px_rgba(229,222,208,0.5)] border border-[#EFEAE2] rounded-2xl";
+
+const inputCls =
+  "w-full rounded-xl border border-[#EFEAE2] bg-[#FAF8F5] px-4 py-2.5 text-sm outline-none transition focus:border-amber-400 focus:ring-4 focus:ring-amber-100";
+
+const STATUS_STYLES: Record<DirectoryStatus, string> = {
+  "Not started": "bg-[#F5F1EA] text-[#8A7F77] border-[#E8E1D6]",
+  Submitted: "bg-amber-50 text-amber-800 border-amber-200",
+  Live: "bg-emerald-50 text-emerald-800 border-emerald-200",
+};
+
+function PlatformBadge({ platform }: { platform: string }) {
+  if (platform.startsWith("Hacker News")) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-[#A0472B] px-3 py-1 text-xs font-medium tracking-wide text-[#FFF5EC] shadow-sm">
+        <span className="font-bold">Y</span> Hacker News
+      </span>
+    );
+  }
+  if (platform.startsWith("Reddit")) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-[#F6D5B5] bg-[#FFF1E2] px-3 py-1 text-xs font-medium tracking-wide text-[#B8561C]">
+        <span className="h-1.5 w-1.5 rounded-full bg-[#E8702A]" /> Reddit
+      </span>
+    );
+  }
+  return (
+    <span className="rounded-full border border-[#EFEAE2] bg-[#FAF8F5] px-3 py-1 text-xs font-medium text-[#70655E]">
+      {platform}
+    </span>
+  );
+}
+
+function agentPrompt(url: string) {
+  return `Use browser_navigate to open ${url}, read the post and top comments, then draft a short founder-to-founder reply using my LaunchRadar profile.`;
+}
 
 export default function Dashboard() {
   const [keywords, setKeywords] = useState<Keyword[]>([]);
@@ -58,15 +69,20 @@ export default function Dashboard() {
   const [posts, setPosts] = useState<Post[]>([]);
   const [scanning, setScanning] = useState(false);
   const [scanNote, setScanNote] = useState<string | null>(null);
+  const [fetchBlocked, setFetchBlocked] = useState(false);
   const [drafting, setDrafting] = useState<string | null>(null);
   const [openReply, setOpenReply] = useState<string | null>(null);
+  const [agentMode, setAgentMode] = useState<Record<string, boolean>>({});
   const [copied, setCopied] = useState<string | null>(null);
 
   const [profile, setProfile] = useState<Profile>({ name: "", url: "", description: "" });
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileSaved, setProfileSaved] = useState(false);
 
-  const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const [dirStatus, setDirStatus] = useState<Record<string, DirectoryStatus>>({});
+  const [filling, setFilling] = useState<string | null>(null);
+  const [autoFill, setAutoFill] = useState<AutoFillPayload | null>(null);
+  const [autoFillError, setAutoFillError] = useState<string | null>(null);
 
   const scan = useCallback(async () => {
     setScanning(true);
@@ -75,11 +91,15 @@ export default function Dashboard() {
       const res = await fetch("/api/monitor");
       const data = await res.json();
       setPosts(data.matches ?? []);
-      if (data.error) setScanNote(`Couldn't reach Reddit: ${data.error}`);
-      else if (typeof data.scanned === "number" && data.scanned > 0)
-        setScanNote(`Scanned ${data.scanned} posts · ${data.inserted} new match${data.inserted === 1 ? "" : "es"}`);
+      setFetchBlocked(!!data.error);
+      if (data.error) setScanNote(`Some sources were blocked — ${data.error}`);
+      else if (data.scanned > 0)
+        setScanNote(
+          `Scanned ${data.channels.reddit.scanned} Reddit + ${data.channels.hackerNews.scanned} HN posts · ${data.inserted} new match${data.inserted === 1 ? "" : "es"}`
+        );
     } catch {
-      setScanNote("Scan failed. Try again in a moment.");
+      setFetchBlocked(true);
+      setScanNote("Scan failed. Try again, or use Agent Mode on a card.");
     } finally {
       setScanning(false);
     }
@@ -92,13 +112,21 @@ export default function Dashboard() {
       .catch(() => {});
     fetch("/api/profile")
       .then((r) => r.json())
-      .then((d) => d.profile && setProfile({ name: d.profile.name ?? "", url: d.profile.url ?? "", description: d.profile.description ?? "" }))
+      .then(
+        (d) =>
+          d.profile &&
+          setProfile({ name: d.profile.name ?? "", url: d.profile.url ?? "", description: d.profile.description ?? "" })
+      )
+      .catch(() => {});
+    fetch("/api/directories")
+      .then((r) => r.json())
+      .then((d) => {
+        const map: Record<string, DirectoryStatus> = {};
+        for (const row of d.directories ?? []) map[row.name] = row.status;
+        setDirStatus(map);
+      })
       .catch(() => {});
     scan();
-    try {
-      const saved = localStorage.getItem(CHECKLIST_KEY);
-      if (saved) setChecked(JSON.parse(saved));
-    } catch {}
   }, [scan]);
 
   const addKeyword = async (e: React.FormEvent) => {
@@ -138,15 +166,17 @@ export default function Dashboard() {
       setPosts((ps) =>
         ps.map((p) => (p.id === postId ? { ...p, ai_reply: reply, status: data.reply ? "Drafted" : p.status } : p))
       );
+    } catch {
+      setPosts((ps) => ps.map((p) => (p.id === postId ? { ...p, ai_reply: "⚠️ Request was blocked or failed." } : p)));
+      setAgentMode((m) => ({ ...m, [postId]: true }));
     } finally {
       setDrafting(null);
     }
   };
 
-  const copyReply = async (post: Post) => {
-    if (!post.ai_reply) return;
-    await navigator.clipboard.writeText(post.ai_reply);
-    setCopied(post.id);
+  const copyText = async (key: string, text: string) => {
+    await navigator.clipboard.writeText(text);
+    setCopied(key);
     setTimeout(() => setCopied(null), 1600);
   };
 
@@ -166,30 +196,61 @@ export default function Dashboard() {
     }
   };
 
-  const toggleDirectory = (name: string) => {
-    setChecked((prev) => {
-      const next = { ...prev, [name]: !prev[name] };
-      try {
-        localStorage.setItem(CHECKLIST_KEY, JSON.stringify(next));
-      } catch {}
-      return next;
-    });
+  const runAutoFill = async (directory: string) => {
+    setFilling(directory);
+    setAutoFillError(null);
+    try {
+      const res = await fetch("/api/auto-submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ directory, profile }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAutoFillError(data.error ?? "Auto-fill failed.");
+        if (data.payload) setAutoFill(data.payload);
+        return;
+      }
+      setAutoFill(data.payload);
+      setDirStatus((s) => ({ ...s, [directory]: "Submitted" }));
+    } catch {
+      setAutoFillError("Auto-fill request failed.");
+    } finally {
+      setFilling(null);
+    }
   };
 
-  const doneCount = DIRECTORIES.filter((d) => checked[d]).length;
-  const progress = Math.round((doneCount / DIRECTORIES.length) * 100);
+  const cycleStatus = async (directory: string) => {
+    const current = dirStatus[directory] ?? "Not started";
+    const next = DIRECTORY_STATUSES[(DIRECTORY_STATUSES.indexOf(current) + 1) % DIRECTORY_STATUSES.length];
+    setDirStatus((s) => ({ ...s, [directory]: next }));
+    await fetch("/api/directories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: directory, status: next }),
+    }).catch(() => {});
+  };
+
+  const liveCount = DIRECTORIES.filter((d) => dirStatus[d] === "Live").length;
+  const submittedCount = DIRECTORIES.filter((d) => dirStatus[d] === "Submitted").length;
+  const livePct = (liveCount / DIRECTORIES.length) * 100;
+  const submittedPct = (submittedCount / DIRECTORIES.length) * 100;
 
   return (
     <div className="min-h-screen bg-[#FAF8F5] text-[#2C221E]">
       {/* Header */}
-      <header className="border-b border-[#EFEAE2] bg-[#FAF8F5]/90 backdrop-blur sticky top-0 z-10">
+      <header className="sticky top-0 z-10 border-b border-[#EFEAE2] bg-[#FAF8F5]/90 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5">
           <div>
             <h1 className="text-xl font-semibold tracking-tight">📻 LaunchRadar</h1>
             <p className="font-serif text-sm italic text-[#70655E]">Your quiet, passive distribution engine</p>
           </div>
           <div className="hidden items-center gap-2 text-xs text-[#70655E] sm:flex">
-            <span className={`h-2 w-2 rounded-full ${scanning ? "animate-pulse bg-amber-500" : "bg-emerald-500/80"}`} />
+            <span
+              className={`h-2 w-2 rounded-full ${
+                scanning ? "animate-pulse bg-amber-500" : fetchBlocked ? "bg-[#A0472B]" : "bg-emerald-500/80"
+              }`}
+            />
             {scanning ? "Listening…" : `${posts.length} conversation${posts.length === 1 ? "" : "s"} on file`}
           </div>
         </div>
@@ -200,7 +261,7 @@ export default function Dashboard() {
         <section className="space-y-6 lg:col-span-7">
           <div className="flex items-baseline justify-between">
             <h2 className="font-serif text-2xl">The Discovery Deck</h2>
-            <span className="text-xs uppercase tracking-[0.2em] text-[#70655E]">Listen · Reply · Repeat</span>
+            <span className="text-xs uppercase tracking-[0.2em] text-[#70655E]">Reddit · Hacker News</span>
           </div>
 
           {/* Keywords */}
@@ -224,7 +285,7 @@ export default function Dashboard() {
                 value={newKeyword}
                 onChange={(e) => setNewKeyword(e.target.value)}
                 placeholder="e.g. looking for a tool to…"
-                className="flex-1 rounded-full border border-[#EFEAE2] bg-[#FAF8F5] px-5 py-2.5 text-sm placeholder:text-[#A89E96] outline-none transition focus:border-amber-400 focus:ring-4 focus:ring-amber-100"
+                className="flex-1 rounded-full border border-[#EFEAE2] bg-[#FAF8F5] px-5 py-2.5 text-sm outline-none transition placeholder:text-[#A89E96] focus:border-amber-400 focus:ring-4 focus:ring-amber-100"
               />
               <button
                 type="submit"
@@ -241,7 +302,7 @@ export default function Dashboard() {
               {keywords.map((k) => (
                 <span
                   key={k.id}
-                  className="group inline-flex items-center gap-1.5 rounded-full border border-amber-200/70 bg-amber-50 px-3.5 py-1.5 text-sm text-amber-900 transition hover:border-amber-300"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-amber-200/70 bg-amber-50 px-3.5 py-1.5 text-sm text-amber-900 transition hover:border-amber-300"
                 >
                   {k.phrase}
                   <button
@@ -254,7 +315,9 @@ export default function Dashboard() {
                 </span>
               ))}
             </div>
-            {scanNote && <p className="mt-4 text-xs text-[#70655E]">{scanNote}</p>}
+            {scanNote && (
+              <p className={`mt-4 text-xs ${fetchBlocked ? "text-[#A0472B]" : "text-[#70655E]"}`}>{scanNote}</p>
+            )}
           </div>
 
           {/* Feed */}
@@ -269,15 +332,14 @@ export default function Dashboard() {
             {posts.map((post) => {
               const isOpen = openReply === post.id;
               const isDrafting = drafting === post.id;
+              const agentOn = !!agentMode[post.id];
               return (
                 <article key={post.id} className={`${card} p-6 transition hover:-translate-y-0.5`}>
-                  <div className="mb-2 flex items-center justify-between gap-3">
-                    <span className="text-xs font-medium uppercase tracking-wider text-[#70655E]">{post.platform}</span>
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <PlatformBadge platform={post.platform} />
                     <span
-                      className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                        post.status === "Drafted"
-                          ? "bg-emerald-50 text-emerald-800"
-                          : "bg-[#FAF3E8] text-amber-800"
+                      className={`rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors duration-500 ${
+                        post.status === "Drafted" ? "bg-emerald-50 text-emerald-800" : "bg-[#FAF3E8] text-amber-800"
                       }`}
                     >
                       {post.status}
@@ -293,10 +355,12 @@ export default function Dashboard() {
                     {post.title}
                   </a>
                   {post.content && (
-                    <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-[#70655E]">{post.content}</p>
+                    <p className="mt-2 line-clamp-3 whitespace-pre-line text-sm leading-relaxed text-[#70655E]">
+                      {post.content.replace(/<[^>]+>/g, " ")}
+                    </p>
                   )}
 
-                  <div className="mt-4 flex flex-wrap gap-2">
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
                     <button
                       onClick={() => draftReply(post.id)}
                       disabled={isDrafting}
@@ -312,23 +376,36 @@ export default function Dashboard() {
                         {isOpen ? "Hide draft" : "View draft"}
                       </button>
                     )}
+                    <button
+                      onClick={() => setAgentMode((m) => ({ ...m, [post.id]: !agentOn }))}
+                      aria-pressed={agentOn}
+                      className={`rounded-full border px-4 py-2 text-sm transition ${
+                        agentOn
+                          ? "border-[#A0472B]/40 bg-[#FBEEE8] text-[#A0472B]"
+                          : "border-[#E5DED0] text-[#70655E] hover:border-amber-400 hover:text-[#2C221E]"
+                      }`}
+                    >
+                      💡 Toggle Agent Mode
+                    </button>
                     <a
                       href={post.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="rounded-full px-4 py-2 text-sm text-[#70655E] transition hover:text-[#2C221E]"
+                      className="rounded-full px-3 py-2 text-sm text-[#70655E] transition hover:text-[#2C221E]"
                     >
-                      Open thread ↗
+                      Open ↗
                     </a>
                   </div>
 
                   {isOpen && (isDrafting || post.ai_reply) && (
-                    <div className="mt-5 rounded-r-xl bg-[#FDFBF7] border-l-4 border-amber-600 px-5 py-4">
+                    <div className="mt-5 rounded-r-xl border-l-4 border-amber-600 bg-[#FDFBF7] px-5 py-4">
                       <div className="mb-2 flex items-center justify-between">
-                        <span className="font-serif text-sm italic text-[#70655E]">A note from one founder to another</span>
+                        <span className="font-serif text-sm italic text-[#70655E]">
+                          A note from one founder to another
+                        </span>
                         {post.ai_reply && !isDrafting && (
                           <button
-                            onClick={() => copyReply(post)}
+                            onClick={() => copyText(post.id, post.ai_reply!)}
                             className="text-xs font-medium text-amber-700 hover:text-amber-900"
                           >
                             {copied === post.id ? "Copied ✓" : "Copy"}
@@ -340,6 +417,36 @@ export default function Dashboard() {
                       ) : (
                         <p className="whitespace-pre-wrap font-serif leading-relaxed text-[#2C221E]">{post.ai_reply}</p>
                       )}
+                    </div>
+                  )}
+
+                  {agentOn && (
+                    <div className="mt-5 rounded-xl border border-[#EBD9CF] bg-[#FCF6F2] p-5">
+                      <p className="text-sm font-medium text-[#A0472B]">
+                        {fetchBlocked ? "Fetching was blocked — read it with Claude Code's browser" : "Read this thread with Claude Code's browser"}
+                      </p>
+                      <p className="mt-1 text-xs leading-relaxed text-[#70655E]">
+                        If CORS, rate limits or bot checks stop the normal fetch, let Claude Code open the page in a
+                        real browser instead. Copy the prompt below, then follow the steps.
+                      </p>
+                      <textarea
+                        readOnly
+                        rows={6}
+                        value={`1. In your local terminal, connect a browser tool once:
+   claude mcp add playwright -- npx @playwright/mcp@latest
+2. Start Claude Code and run /mcp to check "playwright" is connected (it provides browser_navigate).
+3. Paste this prompt:
+   ${agentPrompt(post.url)}`}
+                        className="mt-3 w-full resize-none rounded-lg border border-[#EBD9CF] bg-white/70 p-3 font-mono text-xs leading-relaxed text-[#4A3A33] outline-none"
+                      />
+                      <div className="mt-2 flex justify-end">
+                        <button
+                          onClick={() => copyText(`agent-${post.id}`, agentPrompt(post.url))}
+                          className="text-xs font-medium text-[#A0472B] hover:text-[#7E3620]"
+                        >
+                          {copied === `agent-${post.id}` ? "Copied ✓" : "Copy prompt"}
+                        </button>
+                      </div>
                     </div>
                   )}
                 </article>
@@ -356,7 +463,7 @@ export default function Dashboard() {
           <form onSubmit={saveProfile} className={`${card} space-y-4 p-6`}>
             <div>
               <h3 className="font-medium">Project Profile</h3>
-              <p className="text-sm text-[#70655E]">Context your drafted replies will draw from.</p>
+              <p className="text-sm text-[#70655E]">Used by reply drafts and directory auto-fill.</p>
             </div>
 
             <label className="block">
@@ -365,7 +472,7 @@ export default function Dashboard() {
                 value={profile.name}
                 onChange={(e) => setProfile({ ...profile, name: e.target.value })}
                 placeholder="LaunchRadar"
-                className="w-full rounded-xl border border-[#EFEAE2] bg-[#FAF8F5] px-4 py-2.5 text-sm outline-none transition focus:border-amber-400 focus:ring-4 focus:ring-amber-100"
+                className={inputCls}
               />
             </label>
 
@@ -375,7 +482,7 @@ export default function Dashboard() {
                 value={profile.url}
                 onChange={(e) => setProfile({ ...profile, url: e.target.value })}
                 placeholder="https://"
-                className="w-full rounded-xl border border-[#EFEAE2] bg-[#FAF8F5] px-4 py-2.5 text-sm outline-none transition focus:border-amber-400 focus:ring-4 focus:ring-amber-100"
+                className={inputCls}
               />
             </label>
 
@@ -388,7 +495,7 @@ export default function Dashboard() {
                 onChange={(e) => setProfile({ ...profile, description: e.target.value })}
                 rows={4}
                 placeholder="One honest paragraph about the problem you solve and who it's for."
-                className="w-full resize-none rounded-xl border border-[#EFEAE2] bg-[#FAF8F5] px-4 py-3 text-sm leading-relaxed outline-none transition focus:border-amber-400 focus:ring-4 focus:ring-amber-100"
+                className={`${inputCls} resize-none py-3 leading-relaxed`}
               />
             </label>
 
@@ -409,44 +516,92 @@ export default function Dashboard() {
             <div className="mb-4 flex items-end justify-between">
               <div>
                 <h3 className="font-medium">Launch Directories</h3>
-                <p className="text-sm text-[#70655E]">Thirty quiet doors to knock on.</p>
+                <p className="text-sm text-[#70655E]">Auto-fill, then tap the badge as each one goes live.</p>
               </div>
               <span className="font-serif text-sm text-[#70655E]">
-                {doneCount}/{DIRECTORIES.length}
+                {liveCount} live · {submittedCount} sent
               </span>
             </div>
 
-            <div className="mb-5 h-1.5 overflow-hidden rounded-full bg-[#F3EEE6]">
-              <div
-                className="h-full rounded-full bg-amber-600 transition-all duration-500"
-                style={{ width: `${progress}%` }}
-              />
+            <div className="mb-5 flex h-1.5 overflow-hidden rounded-full bg-[#F3EEE6]">
+              <div className="h-full bg-emerald-500/80 transition-all duration-500" style={{ width: `${livePct}%` }} />
+              <div className="h-full bg-amber-500 transition-all duration-500" style={{ width: `${submittedPct}%` }} />
             </div>
 
-            <ul className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+            <ul className="divide-y divide-[#F3EEE6]">
               {DIRECTORIES.map((name) => {
-                const done = !!checked[name];
+                const status = dirStatus[name] ?? "Not started";
+                const isFilling = filling === name;
                 return (
-                  <li key={name}>
-                    <label className="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-1.5 transition hover:bg-[#FAF8F5]">
-                      <input
-                        type="checkbox"
-                        checked={done}
-                        onChange={() => toggleDirectory(name)}
-                        className="h-4 w-4 rounded border-[#D9D0C3] accent-amber-600"
-                      />
-                      <span
-                        className={`text-sm transition-all duration-300 ${
-                          done ? "text-[#A89E96] line-through decoration-amber-600/60" : "text-[#2C221E]"
-                        }`}
-                      >
-                        {name}
-                      </span>
-                    </label>
+                  <li key={name} className="flex items-center gap-3 py-2">
+                    <span
+                      className={`flex-1 text-sm transition-all duration-300 ${
+                        status === "Live" ? "text-[#A89E96] line-through decoration-amber-600/60" : "text-[#2C221E]"
+                      }`}
+                    >
+                      {name}
+                    </span>
+                    <button
+                      onClick={() => runAutoFill(name)}
+                      disabled={isFilling}
+                      className="rounded-full border border-amber-200 bg-white px-3 py-1 text-xs font-medium text-amber-800 transition hover:border-amber-400 hover:bg-amber-50 disabled:opacity-60"
+                    >
+                      {isFilling ? "Filling…" : "⚡ Auto-Fill"}
+                    </button>
+                    <button
+                      onClick={() => cycleStatus(name)}
+                      title="Click to change status"
+                      className={`w-24 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors duration-500 ${STATUS_STYLES[status]}`}
+                    >
+                      {status === "Live" ? "✓ Live" : status}
+                    </button>
                   </li>
                 );
               })}
             </ul>
+
+            {autoFillError && <p className="mt-4 text-xs text-[#A0472B]">{autoFillError}</p>}
+
+            {autoFill && (
+              <div className="mt-5 rounded-r-xl border-l-4 border-amber-600 bg-[#FDFBF7] px-5 py-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <span className="font-serif text-sm italic text-[#70655E]">Form map · {autoFill.directory}</span>
+                  <button onClick={() => setAutoFill(null)} className="text-xs text-[#A89E96] hover:text-[#2C221E]">
+                    Close
+                  </button>
+                </div>
+                <a
+                  href={autoFill.submitUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block truncate text-xs font-medium text-amber-700 hover:text-amber-900"
+                >
+                  {autoFill.submitUrl} ↗
+                </a>
+                <ul className="mt-3 space-y-2">
+                  {autoFill.inputs.map((input) => (
+                    <li key={input.field} className="text-xs">
+                      <div className="flex justify-between gap-3">
+                        <span className="font-medium capitalize text-[#2C221E]">{input.field}</span>
+                        <code className="truncate text-[#70655E]">{input.inputId ? `#${input.inputId}` : input.selector}</code>
+                      </div>
+                      <p className="mt-0.5 truncate text-[#A89E96]">{input.value || "—"}</p>
+                    </li>
+                  ))}
+                  <li className="flex justify-between gap-3 border-t border-[#EFEAE2] pt-2 text-xs">
+                    <span className="font-medium text-[#2C221E]">Submit</span>
+                    <code className="truncate text-[#70655E]">{autoFill.submitButton}</code>
+                  </li>
+                </ul>
+                {autoFill.notes && <p className="mt-3 text-xs italic text-[#70655E]">{autoFill.notes}</p>}
+                <button
+                  onClick={() => copyText("autofill", JSON.stringify(autoFill, null, 2))}
+                  className="mt-3 text-xs font-medium text-amber-700 hover:text-amber-900"
+                >
+                  {copied === "autofill" ? "Copied ✓" : "Copy JSON"}
+                </button>
+              </div>
+            )}
           </div>
         </aside>
       </main>

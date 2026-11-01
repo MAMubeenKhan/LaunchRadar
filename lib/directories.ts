@@ -1,0 +1,36 @@
+export const DIRECTORIES = [
+  "Product Hunt",
+  "Indie Hackers",
+  "Microlaunch",
+  "Hacker News (Show HN)",
+  "BetaList",
+  "Reddit r/SideProject",
+  "AlternativeTo",
+  "SaaSHub",
+  "Uneed",
+  "Peerlist Launchpad",
+  "DevHunt",
+  "Fazier",
+  "TinyLaunch",
+  "Launching Next",
+  "Startup Stash",
+  "StartupBase",
+  "Betapage",
+  "G2",
+  "Capterra",
+  "Crunchbase",
+  "There's An AI For That",
+  "Futurepedia",
+  "Toolify",
+  "SideProjectors",
+  "DEV Community",
+  "Lobsters",
+  "OpenHunts",
+  "Smol Launch",
+  "Startups.fyi",
+  "F6S",
+] as const;
+
+export type DirectoryStatus = "Not started" | "Submitted" | "Live";
+
+export const DIRECTORY_STATUSES: DirectoryStatus[] = ["Not started", "Submitted", "Live"];
