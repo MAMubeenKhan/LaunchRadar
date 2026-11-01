@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type Database from "better-sqlite3";
-import radarDb, { type Post, type Profile } from "@/lib/db";
+import radarDb, { type KnowledgeRow, type Post, type Profile } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +12,8 @@ const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 // defaults to the current Sonnet. Override with ANTHROPIC_MODEL if needed.
 const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5";
 const MAX_ATTEMPTS = 3;
+// Keep the injected notes to a sensible size so the prompt stays focused.
+const MAX_CONTEXT_CHARS = 12_000;
 
 const SYSTEM_INSTRUCTION =
   "You are an organic, technical human founder participating in community discussions. You must write with zero corporate AI fluff, zero marketing hype, and zero automated cheerleading. Write in casual, direct lower-case or standard human formatting.";
@@ -27,7 +29,41 @@ const FORMATTING_RULES = [
   "- Output only the reply text. No greeting, no sign-off, no quotes around it.",
 ].join("\n");
 
-const SYSTEM_PROMPT = [SYSTEM_INSTRUCTION, SLOP_FILTER, FORMATTING_RULES].join("\n\n");
+const CONTEXT_RULES =
+  "Use the provided real notes and technical experiences to make the generated founder response sound deeply original, personal, and contextually grounded. Avoid making up fake scenarios; lean strictly on the style and facts present in these notes.";
+
+function loadFounderNotes(): string {
+  const rows = db
+    .prepare("SELECT id, content FROM knowledge_base WHERE TRIM(COALESCE(content, '')) <> '' ORDER BY id DESC")
+    .all() as KnowledgeRow[];
+
+  // Newest notes first, until the budget runs out.
+  const picked: string[] = [];
+  let used = 0;
+  for (const row of rows) {
+    const note = row.content.trim();
+    if (used + note.length > MAX_CONTEXT_CHARS) {
+      const room = MAX_CONTEXT_CHARS - used;
+      if (room > 200) picked.push(note.slice(0, room));
+      break;
+    }
+    picked.push(note);
+    used += note.length;
+  }
+  return picked.reverse().join("\n\n---\n\n");
+}
+
+function buildSystemPrompt(notes: string): string {
+  const sections = [SYSTEM_INSTRUCTION, SLOP_FILTER, FORMATTING_RULES];
+  if (notes) {
+    sections.push(
+      `FOUNDER AUTHENTIC CONTEXT / REAL LOGS:\n${CONTEXT_RULES}\n\n<founder_notes>\n${notes}\n</founder_notes>`
+    );
+  } else {
+    sections.push("No founder notes are saved yet. Do not invent personal anecdotes, numbers, or past projects.");
+  }
+  return sections.join("\n\n");
+}
 
 // Banned stems, matched case-insensitively (covers "revolutionizes", "streamlined", etc.).
 const BANNED: RegExp[] = [
@@ -60,7 +96,7 @@ function limitSentences(text: string, max = 3): string {
 
 type Message = { role: "user" | "assistant"; content: string };
 
-async function callClaude(apiKey: string, messages: Message[]): Promise<string> {
+async function callClaude(apiKey: string, system: string, messages: Message[]): Promise<string> {
   const res = await fetch(ANTHROPIC_URL, {
     method: "POST",
     headers: {
@@ -71,7 +107,7 @@ async function callClaude(apiKey: string, messages: Message[]): Promise<string> 
     body: JSON.stringify({
       model: MODEL,
       max_tokens: 300,
-      system: SYSTEM_PROMPT,
+      system,
       messages,
     }),
   });
@@ -101,6 +137,8 @@ export async function POST(req: Request) {
   if (!post) return NextResponse.json({ error: "Post not found" }, { status: 404 });
 
   const profile = db.prepare("SELECT * FROM profile WHERE id = 1").get() as Profile | undefined;
+  const founderNotes = loadFounderNotes();
+  const systemPrompt = buildSystemPrompt(founderNotes);
 
   const userPrompt = `Thread on ${post.platform}:
 Title: ${post.title}
@@ -120,7 +158,7 @@ Write my reply.`;
 
   try {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const draft = limitSentences(await callClaude(apiKey, messages));
+      const draft = limitSentences(await callClaude(apiKey, systemPrompt, messages));
       const slop = findSlop(draft);
 
       if (!best || slop.length < bestSlop.length) {
@@ -146,5 +184,5 @@ Write my reply.`;
 
   db.prepare("UPDATE posts SET ai_reply = ?, status = 'Drafted' WHERE id = ?").run(best, postId);
 
-  return NextResponse.json({ postId, reply: best, status: "Drafted", model: MODEL, flagged: bestSlop });
+  return NextResponse.json({ postId, reply: best, status: "Drafted", model: MODEL, flagged: bestSlop, usedNotes: founderNotes.length > 0 });
 }

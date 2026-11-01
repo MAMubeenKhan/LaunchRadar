@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { DIRECTORIES, DIRECTORY_STATUSES, type DirectoryStatus } from "@/lib/directories";
 
 type Keyword = { id: number; phrase: string };
@@ -84,6 +84,11 @@ export default function Dashboard() {
   const [autoFill, setAutoFill] = useState<AutoFillPayload | null>(null);
   const [autoFillError, setAutoFillError] = useState<string | null>(null);
 
+  const [brainId, setBrainId] = useState<number | null>(null);
+  const [brainDump, setBrainDump] = useState("");
+  const [brainState, setBrainState] = useState<"idle" | "loading" | "saving" | "saved" | "error">("loading");
+  const brainLoaded = useRef(false);
+
   const scan = useCallback(async () => {
     setScanning(true);
     setScanNote(null);
@@ -126,8 +131,50 @@ export default function Dashboard() {
         setDirStatus(map);
       })
       .catch(() => {});
+    fetch("/api/knowledge")
+      .then((r) => r.json())
+      .then((d) => {
+        const first = d.entries?.[0];
+        if (first) {
+          setBrainId(first.id);
+          setBrainDump(first.content ?? "");
+        }
+        setBrainState("idle");
+      })
+      .catch(() => setBrainState("error"))
+      .finally(() => {
+        brainLoaded.current = true;
+      });
     scan();
   }, [scan]);
+
+  // Autosave the brain dump shortly after typing stops.
+  useEffect(() => {
+    if (!brainLoaded.current) return;
+    setBrainState("saving");
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch("/api/knowledge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(brainId === null ? { content: brainDump } : { id: brainId, content: brainDump }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        if (brainId === null && typeof data.id === "number") setBrainId(data.id);
+        setBrainState("saved");
+      } catch {
+        setBrainState("error");
+      }
+    }, 800);
+    return () => clearTimeout(timer);
+    // brainId is set from the first save; re-running on it would save twice.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brainDump]);
+
+  const exportWorkspace = () => {
+    window.location.href = "/api/export";
+  };
 
   const addKeyword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -245,6 +292,7 @@ export default function Dashboard() {
             <h1 className="text-xl font-semibold tracking-tight">📻 LaunchRadar</h1>
             <p className="font-serif text-sm italic text-[#70655E]">Your quiet, passive distribution engine</p>
           </div>
+          <div className="flex items-center gap-4">
           <div className="hidden items-center gap-2 text-xs text-[#70655E] sm:flex">
             <span
               className={`h-2 w-2 rounded-full ${
@@ -252,6 +300,14 @@ export default function Dashboard() {
               }`}
             />
             {scanning ? "Listening…" : `${posts.length} conversation${posts.length === 1 ? "" : "s"} on file`}
+          </div>
+          <button
+            onClick={exportWorkspace}
+            title="Download posts, keywords, directories and notes as CSV"
+            className="rounded-full border border-[#E5DED0] bg-white px-4 py-2 text-sm font-medium text-[#2C221E] shadow-[0_2px_10px_-4px_rgba(229,222,208,0.8)] transition hover:border-amber-400 hover:text-amber-800"
+          >
+            📦 Export Workspace
+          </button>
           </div>
         </div>
       </header>
@@ -510,6 +566,39 @@ export default function Dashboard() {
               </button>
             </div>
           </form>
+
+          {/* Founder Brain Dump */}
+          <div className={`${card} p-6`}>
+            <div className="mb-4 flex items-end justify-between">
+              <div>
+                <h3 className="font-medium">🧠 Founder Brain Dump</h3>
+                <p className="text-sm text-[#70655E]">Raw dev logs and lessons. Replies borrow your voice and facts from here.</p>
+              </div>
+              <span
+                className={`text-xs transition-colors duration-300 ${
+                  brainState === "error"
+                    ? "text-[#A0472B]"
+                    : brainState === "saved"
+                      ? "text-emerald-700"
+                      : "text-[#A89E96]"
+                }`}
+              >
+                {brainState === "loading" && "Loading…"}
+                {brainState === "saving" && "Saving…"}
+                {brainState === "saved" && "Saved ✓"}
+                {brainState === "error" && "Not saved"}
+              </span>
+            </div>
+            <textarea
+              value={brainDump}
+              onChange={(e) => setBrainDump(e.target.value)}
+              disabled={brainState === "loading"}
+              rows={9}
+              placeholder={"e.g. spent two nights fighting reddit's rate limits — fix was a real user-agent + 60s backoff.\nswitched sqlite to WAL mode, concurrent reads stopped locking.\nusers keep asking for slack alerts, not email."}
+              className="w-full resize-y rounded-xl border border-[#F0E3CF] bg-[#FDF8EF] px-4 py-3 font-serif text-sm leading-relaxed text-[#2C221E] outline-none transition placeholder:text-[#B9AC9F] focus:border-amber-400 focus:ring-4 focus:ring-amber-100 disabled:opacity-60"
+            />
+            <p className="mt-2 text-right text-xs text-[#A89E96]">{brainDump.length.toLocaleString()} / 50,000</p>
+          </div>
 
           {/* Directory checklist */}
           <div className={`${card} p-6`}>

@@ -18,6 +18,8 @@ export type Profile = { id: number; name: string; url: string; description: stri
 
 export type DirectoryRow = { name: string; status: string; submitted_at: string | null };
 
+export type KnowledgeRow = { id: number; content: string };
+
 const DB_PATH = path.join(process.cwd(), "radar.db");
 
 function init(): Database.Database {
@@ -51,6 +53,11 @@ function init(): Database.Database {
       name TEXT PRIMARY KEY,
       status TEXT NOT NULL DEFAULT 'Not started',
       submitted_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS knowledge_base (
+      id INTEGER PRIMARY KEY,
+      content TEXT
     );
   `);
 
