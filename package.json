@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "radar": "node scripts/radar-mcp.js",
+    "radar:browser": "node scripts/radar-browser.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",

@@ -390,7 +390,13 @@ export default function Dashboard() {
               const isDrafting = drafting === post.id;
               const agentOn = !!agentMode[post.id];
               return (
-                <article key={post.id} className={`${card} p-6 transition hover:-translate-y-0.5`}>
+                <article
+                  key={post.id}
+                  data-post-id={post.id}
+                  data-platform={post.platform}
+                  data-status={post.status}
+                  className={`post-card ${card} p-6 transition hover:-translate-y-0.5`}
+                >
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <PlatformBadge platform={post.platform} />
                     <span
@@ -406,7 +412,7 @@ export default function Dashboard() {
                     href={post.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="block text-lg font-medium leading-snug hover:text-amber-800"
+                    className="post-title block text-lg font-medium leading-snug hover:text-amber-800"
                   >
                     {post.title}
                   </a>
@@ -420,7 +426,8 @@ export default function Dashboard() {
                     <button
                       onClick={() => draftReply(post.id)}
                       disabled={isDrafting}
-                      className="rounded-full bg-amber-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-700 disabled:opacity-60"
+                      data-post-id={post.id}
+                      className="draft-response-btn rounded-full bg-amber-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-700 disabled:opacity-60"
                     >
                       {isDrafting ? "Drafting…" : post.ai_reply ? "Redraft reply" : "Draft reply"}
                     </button>
@@ -471,7 +478,9 @@ export default function Dashboard() {
                       {isDrafting ? (
                         <p className="animate-pulse font-serif text-[#A89E96]">Thinking it through…</p>
                       ) : (
-                        <p className="whitespace-pre-wrap font-serif leading-relaxed text-[#2C221E]">{post.ai_reply}</p>
+                        <p className="draft-reply-text whitespace-pre-wrap font-serif leading-relaxed text-[#2C221E]">
+                          {post.ai_reply}
+                        </p>
                       )}
                     </div>
                   )}
